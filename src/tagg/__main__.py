@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dependency-free Auto-Tagger CLI using a JEV (Joint Evaluation & Verification)
+Dependency-free tagg CLI using a JEV (Joint Evaluation & Verification)
 decision model against a local llama.cpp server endpoint.
 """
 
@@ -44,8 +44,8 @@ def setup_logger(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Standard output handler (stdout/stderr)
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Keep stdout reserved for the final machine-readable result.
+    console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
@@ -108,23 +108,17 @@ def filter_tags(
 ) -> dict[str, Any]:
     probs = api_response["answers"]["tag"]["probabilities"]
     logger.debug(f"Probs for each tag:\n{probs}")
-    keys = list(probs.keys())
-    keys = sorted(keys, key=lambda x: probs[x], reverse=True)
+    keys = sorted(probs, key=lambda x: probs[x], reverse=True)
     logger.debug(f"Sorted probs:\n{keys}")
 
     if len(keys) > max_n:
         keys = keys[:max_n]
 
-    for k in keys:
-        if probs.get(k) is None:
-            continue
-
-        if probs.get(k) < threshold:
-            logger.debug(
-                f"Removing response {k} because confidence < threshold: "
-                f"{probs[k]} < {threshold}"
-            )
-            keys.remove(k)
+    keys = [
+        key
+        for key in keys
+        if probs.get(key) is not None and probs[key] >= threshold
+    ]
 
     return {"tags": keys}
 
@@ -137,7 +131,7 @@ def read_file_excerpt(path: Path, max_bytes: int) -> str:
 
 
 def wait_for_server(
-    url: str = "http://127.0.0.1:8080/health",
+    url: str = "http://127.0.0.1:9931/health",
     timeout: float = 60.0,
     interval: float = 0.5,
 ) -> bool:
@@ -161,22 +155,65 @@ def wait_for_server(
     return False
 
 
-def start_server(model: str, url: str):
+def start_server(
+    model: str, endpoint_url: str
+) -> subprocess.Popen[bytes] | None:
     cmd = ["llama", "serve", "-hf", model]
     proc = subprocess.Popen(cmd)
-    fail = False
-    try:
-        logger.debug("Waiting for llama.cpp server to initialize...")
-        if wait_for_server(url, timeout=90):
-            logger.debug("Server is healthy and ready for inference.")
-        else:
-            logger.debug("Timeout reached: server failed to report healthy.")
-            fail = True
-            proc.terminate()
-    finally:
-        proc.wait()
+    health_url = (
+        endpoint_url.split("/v1/", maxsplit=1)[0].rstrip("/") + "/health"
+    )
+    logger.debug("Waiting for llama.cpp server to initialize...")
+    if wait_for_server(health_url, timeout=90):
+        logger.debug("Server is healthy and ready for inference.")
+        return proc
 
-    return fail
+    logger.debug("Timeout reached: server failed to report healthy.")
+    proc.terminate()
+    proc.wait()
+    return None
+
+
+def infer_tags(
+    model: str,
+    content: str,
+    candidate_tags: list[str],
+    url: str,
+    num_tags: int,
+    threshold: float,
+    ask_separately: bool,
+) -> dict[str, Any]:
+    if not ask_separately:
+        schema = curate_json_schema(model, content, candidate_tags)
+        return filter_tags(query_endpoint(url, schema), num_tags, threshold)
+
+    remaining = list(candidate_tags)
+    selected: list[str] = []
+    for _ in range(num_tags):
+        if not remaining:
+            break
+        schema = curate_json_schema(model, content, remaining)
+        tags = filter_tags(query_endpoint(url, schema), 1, threshold)["tags"]
+        if not tags:
+            break
+        selected.append(tags[0])
+        remaining.remove(tags[0])
+    return {"tags": selected}
+
+
+def emit_progress(path: Path, completed: int, total: int) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "progress",
+                "path": str(path),
+                "completed": completed,
+                "total": total,
+            }
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -268,43 +305,56 @@ def main() -> int:
     args = parse_args()
     log_level = "DEBUG" if args.verbose else "INFO"
     global logger
-    logger = setup_logger("autotagger", level=log_level, log_file=args.log_file)
+    logger = setup_logger("tagg", level=log_level, log_file=args.log_file)
 
+    server_process = None
     if args.start_server:
-        fail = start_server(args.model)
-        if fail:
+        server_process = start_server(args.model, args.url)
+        if server_process is None:
             return 1
 
-    results = {}
-    for path in args.paths:
-        if not path.is_file():
-            logger.debug(f"Skipping invalid file: {path}", file=sys.stderr)
-            results[str(path)] = {"error": "File not found or is a directory."}
-            continue
+    results: dict[str, dict[str, Any]] = {}
+    total = len(args.paths)
+    try:
+        for completed, path in enumerate(args.paths, start=1):
+            if not path.is_file():
+                logger.debug(f"Skipping invalid file: {path}")
+                results[str(path)] = {
+                    "error": "File not found or is a directory."
+                }
+                emit_progress(path, completed, total)
+                continue
 
-        try:
-            content = read_file_excerpt(path, args.max_bytes)
-            schema = curate_json_schema(args.model, content, args.tags)
-            raw_response = query_endpoint(args.url, schema)
-            filtered_tags = filter_tags(
-                raw_response, args.num_tags_per_file, args.threshold
-            )
-
-            results[str(path)] = filtered_tags
-
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")
-            logger.debug(f"[HTTP {e.code}] {path}: {err_body}")
-            results[str(path)] = {"error": f"HTTP {e.code}"}
-        except urllib.error.URLError as e:
-            logger.debug(f"[NETWORK ERROR] {path}: {e.reason}")
-            results[str(path)] = {"error": str(e.reason)}
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.debug(f"[PARSE ERROR] {path}: {e}")
-            results[str(path)] = {"error": "Malformed JSON from model"}
-        except Exception as e:
-            logger.debug(f"[ERROR] {path}: {e}")
-            results[str(path)] = {"error": str(e)}
+            try:
+                content = read_file_excerpt(path, args.max_bytes)
+                results[str(path)] = infer_tags(
+                    args.model,
+                    content,
+                    args.tags,
+                    args.url,
+                    args.num_tags_per_file,
+                    args.threshold,
+                    args.ask_separately,
+                )
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="replace")
+                logger.debug(f"[HTTP {e.code}] {path}: {err_body}")
+                results[str(path)] = {"error": f"HTTP {e.code}"}
+            except urllib.error.URLError as e:
+                logger.debug(f"[NETWORK ERROR] {path}: {e.reason}")
+                results[str(path)] = {"error": str(e.reason)}
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.debug(f"[PARSE ERROR] {path}: {e}")
+                results[str(path)] = {"error": "Malformed JSON from model"}
+            except Exception as e:
+                logger.debug(f"[ERROR] {path}: {e}")
+                results[str(path)] = {"error": str(e)}
+            finally:
+                emit_progress(path, completed, total)
+    finally:
+        if server_process is not None and server_process.poll() is None:
+            server_process.terminate()
+            server_process.wait()
 
     print(json.dumps(results, indent=2))
     return 0

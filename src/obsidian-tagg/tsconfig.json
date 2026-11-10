@@ -1,15 +1,14 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
-    "inlineSources": true,
     "module": "ESNext",
     "target": "ES6",
     "allowJs": true,
     "noImplicitAny": true,
-    "moduleResolution": "node",
-    "importHelpers": true,
+    "moduleResolution": "bundler",
+    "importHelpers": false,
     "isolatedModules": true,
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    "types": ["node"]
   },
   "include": ["**/*.ts"]
 }

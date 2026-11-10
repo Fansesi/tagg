@@ -2,7 +2,7 @@
   "id": "obsidian-tagg",
   "name": "obsidian-tagg",
   "version": "1.0.0",
-  "minAppVersion": "0.15.0",
+  "minAppVersion": "1.4.10",
   "description": "Applies tags to active markdown notes via the local llama.cpp tagg CLI.",
   "author": "Fansesi",
   "isDesktopOnly": true,
