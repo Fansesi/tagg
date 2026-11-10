@@ -1,6 +1,8 @@
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
   for (var name in all)
@@ -14,6 +16,14 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // main.ts
@@ -24,12 +34,13 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_child_process = require("child_process");
+var import_path = __toESM(require("path"));
+var import_process = __toESM(require("process"));
 var DEFAULT_SETTINGS = {
-  pythonPath: "python3",
-  runnerArguments: "",
-  cliScriptPath: "/absolute/path/to/tagg.py",
+  pythonPath: "",
   serverUrl: "http://127.0.0.1:9931/v1/systemone",
-  candidateTags: "systems-programming, posix, benchmarking, cuda, documentation, python",
+  excludedTags: "",
+  maxCandidateTags: null,
   model: "model",
   threshold: 0.1,
   numTagsPerFile: 1,
@@ -97,21 +108,55 @@ var TaggPlugin = class extends import_obsidian.Plugin {
     const adapter = this.app.vault.adapter;
     return adapter.getFullPath ? adapter.getFullPath(file.path) : file.path;
   }
-  getCandidateTags() {
-    return this.settings.candidateTags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0);
+  getPythonWorkingDirectory() {
+    const adapter = this.app.vault.adapter;
+    const pluginPath = import_path.default.join(String(this.manifest.dir ?? ""), "python");
+    return adapter.getFullPath ? adapter.getFullPath(pluginPath) : pluginPath;
   }
-  buildArgs(paths) {
-    const runnerArguments = this.settings.runnerArguments.trim().split(/\s+/).filter((argument) => argument.length > 0);
-    const commandArguments = this.settings.cliScriptPath.trim().length > 0 ? [this.settings.cliScriptPath] : [];
+  getPythonCommands() {
+    const configuredPath = this.settings.pythonPath.trim();
+    if (configuredPath.length > 0) {
+      return [{ executable: configuredPath, args: [] }];
+    }
+    const commands = [];
+    commands.push({ executable: "python3", args: [] });
+    commands.push({ executable: "python", args: [] });
+    if (import_process.default.platform === "win32") {
+      commands.push({ executable: "py", args: ["-3"] });
+    }
+    return commands;
+  }
+  getCandidateTags() {
+    const excludedTags = new Set(
+      this.settings.excludedTags.split(",").map((tag) => tag.trim().replace(/^#+/, "")).filter((tag) => tag.length > 0)
+    );
+    const vaultTags = /* @__PURE__ */ new Set();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      for (const tag of cache?.tags ?? []) {
+        vaultTags.add(tag.tag);
+      }
+      for (const tag of (0, import_obsidian.parseFrontMatterTags)(cache?.frontmatter) ?? []) {
+        vaultTags.add(tag);
+      }
+    }
+    const candidateTags = Array.from(vaultTags).map((tag) => tag.replace(/^#+/, "")).filter((tag) => tag.length > 0 && !excludedTags.has(tag));
+    for (let index = candidateTags.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [candidateTags[index], candidateTags[swapIndex]] = [candidateTags[swapIndex], candidateTags[index]];
+    }
+    return this.settings.maxCandidateTags === null ? candidateTags : candidateTags.slice(0, this.settings.maxCandidateTags);
+  }
+  buildArgs(paths, candidateTags) {
     const args = [
-      ...runnerArguments,
-      ...commandArguments,
+      "-m",
+      "tagg",
       "--paths",
       ...paths,
       "--url",
       this.settings.serverUrl,
       "--tags",
-      ...this.getCandidateTags(),
+      ...candidateTags,
       "--model",
       this.settings.model,
       "--threshold",
@@ -136,6 +181,11 @@ var TaggPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice("No Markdown files found.");
       return;
     }
+    const candidateTags = this.getCandidateTags();
+    if (candidateTags.length === 0) {
+      new import_obsidian.Notice("No vault tags are available after exclusions.");
+      return;
+    }
     this.activeRun = true;
     const startedAt = Date.now();
     const status = this.addStatusBarItem();
@@ -148,7 +198,7 @@ var TaggPlugin = class extends import_obsidian.Plugin {
     new import_obsidian.Notice(`Tagg is evaluating ${files.length} Markdown file${files.length === 1 ? "" : "s"}...`);
     const paths = files.map((file) => this.getFullPath(file));
     try {
-      const result = await this.runCli(paths, files.length, (event) => {
+      const result = await this.runCli(paths, files.length, candidateTags, (event) => {
         completed = event.completed;
         updateStatus(`evaluating ${completed}/${event.total}`);
       });
@@ -193,62 +243,77 @@ var TaggPlugin = class extends import_obsidian.Plugin {
       window.setTimeout(() => status.remove(), 5e3);
     }
   }
-  runCli(paths, total, onProgress) {
-    return new Promise((resolve, reject) => {
-      const child = (0, import_child_process.spawn)(this.settings.pythonPath, this.buildArgs(paths), {
-        windowsHide: true
-      });
-      let stdout = "";
-      let stderrBuffer = "";
-      const stderrDiagnostics = [];
-      let settled = false;
-      const fail = (error) => {
-        if (!settled) {
-          settled = true;
-          reject(error);
-        }
-      };
-      child.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
-      child.stderr.on("data", (data) => {
-        stderrBuffer += data.toString();
-        const lines = stderrBuffer.split(/\r?\n/);
-        stderrBuffer = lines.pop() || "";
-        for (const line of lines) {
-          try {
-            const event = JSON.parse(line);
-            if (event.event === "progress" && event.total === total) {
-              onProgress(event);
+  runCli(paths, total, candidateTags, onProgress) {
+    const commands = this.getPythonCommands();
+    const attempt = (index) => {
+      const command = commands[index];
+      return new Promise((resolve, reject) => {
+        const child = (0, import_child_process.spawn)(command.executable, [...command.args, ...this.buildArgs(paths, candidateTags)], {
+          cwd: this.getPythonWorkingDirectory(),
+          windowsHide: true
+        });
+        let stdout = "";
+        let stderrBuffer = "";
+        const stderrDiagnostics = [];
+        let settled = false;
+        const fail = (error) => {
+          if (!settled) {
+            settled = true;
+            if (error.message.includes("ENOENT") && index + 1 < commands.length) {
+              void attempt(index + 1).then(resolve, reject);
             } else {
-              stderrDiagnostics.push(line);
+              reject(error);
             }
-          } catch {
-            stderrDiagnostics.push(line);
-            console.debug("Tagg CLI:", line);
           }
-        }
-      });
-      child.on("error", fail);
-      child.on("close", (code) => {
-        if (settled) {
-          return;
-        }
-        if (code !== 0) {
-          if (stderrBuffer.trim().length > 0) {
-            stderrDiagnostics.push(stderrBuffer.trim());
+        };
+        child.stdout.on("data", (data) => {
+          stdout += data.toString();
+        });
+        child.stderr.on("data", (data) => {
+          stderrBuffer += data.toString();
+          const lines = stderrBuffer.split(/\r?\n/);
+          stderrBuffer = lines.pop() || "";
+          for (const line of lines) {
+            try {
+              const event = JSON.parse(line);
+              if (event.event === "progress" && event.total === total) {
+                onProgress(event);
+              } else {
+                stderrDiagnostics.push(line);
+              }
+            } catch {
+              stderrDiagnostics.push(line);
+              console.debug("Tagg CLI:", line);
+            }
           }
-          const diagnostics = stderrDiagnostics.join("\n");
-          fail(new Error(`CLI exited with code ${code}${diagnostics ? `: ${diagnostics}` : ""}`));
-          return;
-        }
-        try {
-          settled = true;
-          resolve(JSON.parse(stdout));
-        } catch (error) {
-          fail(new Error(`Failed to parse CLI output: ${error instanceof Error ? error.message : String(error)}`));
-        }
+        });
+        child.on("error", fail);
+        child.on("close", (code) => {
+          if (settled) {
+            return;
+          }
+          if (code !== 0) {
+            if (stderrBuffer.trim().length > 0) {
+              stderrDiagnostics.push(stderrBuffer.trim());
+            }
+            const diagnostics = stderrDiagnostics.join("\n");
+            fail(new Error(`CLI exited with code ${code}${diagnostics ? `: ${diagnostics}` : ""}`));
+            return;
+          }
+          try {
+            settled = true;
+            resolve(JSON.parse(stdout));
+          } catch (error) {
+            fail(new Error(`Failed to parse CLI output: ${error instanceof Error ? error.message : String(error)}`));
+          }
+        });
       });
+    };
+    return attempt(0).catch((error) => {
+      if (error instanceof Error && error.message.includes("ENOENT")) {
+        throw new Error("No Python interpreter found. Configure a Python executable in Tagg settings.");
+      }
+      throw error;
     });
   }
   async loadSettings() {
@@ -267,21 +332,9 @@ var TaggSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Tagg Settings" });
-    new import_obsidian.Setting(containerEl).setName("Python Executable").setDesc("Executable, such as python3 or uv.").addText(
+    new import_obsidian.Setting(containerEl).setName("Python Executable").setDesc("Optional executable path. If empty, Tagg tries python3, python, then py -3 on Windows.").addText(
       (text) => text.setValue(this.plugin.settings.pythonPath).onChange(async (val) => {
         this.plugin.settings.pythonPath = val;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Runner Arguments").setDesc('Optional arguments before the script, such as "run tagg" for uv.').addText(
-      (text) => text.setValue(this.plugin.settings.runnerArguments).onChange(async (val) => {
-        this.plugin.settings.runnerArguments = val;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("CLI Script Path").setDesc("Script path; leave empty when using a console command such as uv run tagg.").addText(
-      (text) => text.setValue(this.plugin.settings.cliScriptPath).onChange(async (val) => {
-        this.plugin.settings.cliScriptPath = val;
         await this.plugin.saveSettings();
       })
     );
@@ -291,10 +344,25 @@ var TaggSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Candidate Tags").setDesc("Comma-separated list of candidate tags.").addTextArea(
-      (text) => text.setValue(this.plugin.settings.candidateTags).onChange(async (val) => {
-        this.plugin.settings.candidateTags = val;
+    new import_obsidian.Setting(containerEl).setName("Excluded Tags").setDesc("Comma-separated tags to exclude. The leading # is optional.").addTextArea(
+      (text) => text.setValue(this.plugin.settings.excludedTags).onChange(async (val) => {
+        this.plugin.settings.excludedTags = val;
         await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Maximum Candidate Tags").setDesc("Optional positive integer. Tags are shuffled before this limit is applied.").addText(
+      (text) => text.setPlaceholder("Unlimited").setValue(this.plugin.settings.maxCandidateTags === null ? "" : String(this.plugin.settings.maxCandidateTags)).onChange(async (value) => {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+          this.plugin.settings.maxCandidateTags = null;
+          await this.plugin.saveSettings();
+          return;
+        }
+        const maxCandidateTags = Number(trimmed);
+        if (Number.isInteger(maxCandidateTags) && maxCandidateTags > 0) {
+          this.plugin.settings.maxCandidateTags = maxCandidateTags;
+          await this.plugin.saveSettings();
+        }
       })
     );
     new import_obsidian.Setting(containerEl).setName("Model").addText(
