@@ -26,6 +26,6 @@ await build({
 await cp(path.join(pluginSource, 'manifest.json'), path.join(release, 'manifest.json'));
 const pythonRelease = path.join(release, 'python', 'tagg');
 await mkdir(pythonRelease, { recursive: true });
-for (const filename of ['__init__.py', '__main__.py']) {
+for (const filename of ['__init__.py', '__main__.py', 'core.py']) {
   await cp(path.join(root, 'src', 'tagg', filename), path.join(pythonRelease, filename));
 }

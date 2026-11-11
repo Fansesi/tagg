@@ -1,53 +1,94 @@
-## Development
+# Tagg
 
-The Python package is managed by the root `pyproject.toml`. The Obsidian plugin has its own npm project under `src/obsidian-tagg`.
+Tagg uses a local decision model to suggest tags for file content. It sends content and candidate tags to a local `llama.cpp` server, then returns the tags that meet the configured confidence threshold.
 
-To build a release plugin directory, run the npm command inside the Node container used for plugin development:
+Tagg is available as:
 
-```sh
-npm --prefix src/obsidian-tagg run build:release
-```
+- A command-line tool for tagging files and scripts.
+- An Obsidian plugin for tagging Markdown notes.
+- A Thunderbird extension for tagging messages.
 
-The output is written to `dist/obsidian-tagg`. Copy that directory to `<vault>/.obsidian/plugins/obsidian-tagg/`.
+The model runs locally. Tagg does not upload your files or bundle a Python interpreter or model.
 
-The plugin bundles the Python source under `python/tagg` and runs it with `python -m tagg`. It uses a configured Python executable when provided, otherwise it tries `python3`, `python`, and `py -3` on Windows. Python itself is not bundled, and `uv` is only a development/install option.
+## Requirements
 
-Candidate tags are collected automatically from the vault through Obsidian's metadata cache. Use the `Excluded Tags` setting for a comma-separated list of tags that should not be offered to the model; entries may be written with or without a leading `#`.
+All integrations require:
 
-## Thunderbird prototype
+- Python 3.10 or newer.
+- A running `llama.cpp` server with the Tagg-compatible `systemone` endpoint. Note that you may need a later version of `llama.cpp`.
+- A model that can evaluate the JSON requests sent to that endpoint. 
 
-The Thunderbird implementation is a desktop WebExtension plus a native-messaging companion host. Thunderbird cannot execute Python directly from an XPI, so the extension sends selected message content to the host. The host contains the `tagg` Python source and uses the user's installed Python runtime; no Python interpreter or llama.cpp model is bundled.
+Additional requirements depend on the integration:
 
-The current prototype supports:
+- CLI: Python package installation.
+- Obsidian: Obsidian 1.4.10 or newer, desktop edition.
+- Thunderbird: Thunderbird 115 or newer, Python 3.10 or newer, and the Tagg native-messaging host registered with Thunderbird (use `scripts/install-thunderbird-host.sh`)
 
-- Tagging the message currently displayed in the reading pane from the message context menu.
-- Falling back to selected messages when no message is currently displayed.
-- Existing Thunderbird tags as model candidates.
-- Excluded tags, candidate limits, tag thresholds, and multiple tags per message.
-- Native-messaging JSON framing with per-message errors.
+## Install
 
-To build the Thunderbird release with the repository's Node container:
+Download the latest release from GitHub Releases. Release assets are provided for each integration.
 
-```sh
-docker run --rm -it \
-	-u "$(id -u):$(id -g)" \
-	-v "$PWD":/app \
-	-w /app \
-	node:20-alpine npm --prefix src/thunderbird-tagg install
+### CLI
 
-docker run --rm -it \
-	-u "$(id -u):$(id -g)" \
-	-v "$PWD":/app \
-	-w /app \
-	node:20-alpine npm --prefix src/thunderbird-tagg run build:release
-```
-
-The output is written to `dist/thunderbird-tagg`. Register the native host before using the extension:
+Install the Python wheel with pip:
 
 ```sh
-./scripts/install-thunderbird-host.sh
+python3 -m pip install tagg-*.whl
 ```
 
-The installer copies the host to a stable user directory, writes the absolute launcher path into the native-messaging manifest, and registers it in the standard Linux or macOS Mozilla host directory. Set `TAGG_PYTHON=/path/to/python` when the required interpreter is not available as `python3`. Restart Thunderbird after registering the host, then install the extension from the generated release directory as an XPI.
+Or install it as a standalone tool with [uv](https://docs.astral.sh/uv/):
 
-The native host expects Python 3.10 or newer and an already-running llama.cpp endpoint. Windows host registration still needs a platform-specific installer; the generated `native-host` directory contains the Python host and manifest inputs for that installer.
+```sh
+uv tool install tagg-*.whl
+```
+
+### Obsidian
+
+1. Download the `obsidian-tagg-*.zip` release asset.
+2. Extract it to `<vault>/.obsidian/plugins/obsidian-tagg/`.
+3. Enable **Tagg** in Obsidian's community plugins settings.
+4. Open Tagg settings and configure the Python executable and model endpoint if the defaults do not apply.
+
+The plugin uses existing tags in the vault as candidate tags. It can tag the active note or all Markdown files inside selected folders.
+
+### Thunderbird
+
+1. Download and install the `thunderbird-tagg-*.xpi` release asset in Thunderbird.
+2. Extract `thunderbird-native-host-*.tar.gz`.
+3. Register the extracted native host with the installer from a source checkout:
+
+   ```sh
+  ./scripts/install-thunderbird-host.sh /path/to/extracted
+   ```
+
+   Set `TAGG_PYTHON=/path/to/python` before running the installer when `python3` is not the required interpreter.
+4. Restart Thunderbird and configure the extension from its settings page.
+
+The native host installer currently supports Linux and macOS. Windows requires platform-specific native-messaging registration.
+
+## CLI usage
+
+Start the model server, then run Tagg with one or more files and candidate tags:
+
+```sh
+tagg \
+  --paths notes/example.md \
+  --tags work personal research \
+  --url http://127.0.0.1:9931/v1/systemone
+```
+
+The command prints a JSON object mapping each file to its selected tags. Useful options include:
+
+- `--num-tags-per-file N` to select more than one tag.
+- `--threshold VALUE` to require a higher or lower confidence.
+- `--max-bytes N` to limit how much of each file is read.
+- `--start-server --model MODEL` to let Tagg start and stop `llama serve` for the run.
+- `--verbose` and `--log-file PATH` for diagnostics.
+
+Run `tagg --help` for the complete option list.
+
+## Privacy and Limitations
+
+Tagg sends file or message content to the local endpoint configured by you. Keep the endpoint local if content must remain on your machine. The model, `llama.cpp`, and Python runtime are not included in the release assets.
+
+The integrations are desktop applications. The Obsidian and Thunderbird extensions do not support mobile or web-only environments.
