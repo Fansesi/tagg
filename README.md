@@ -57,11 +57,11 @@ The plugin uses existing tags in the vault as candidate tags. It can tag the act
 2. Extract `thunderbird-native-host-*.tar.gz`.
 3. Register the extracted native host with the installer from a source checkout:
 
-   ```sh
-  ./scripts/install-thunderbird-host.sh /path/to/extracted
-   ```
+```sh
+./scripts/install-thunderbird-host.sh /path/to/extracted
+```
 
-   Set `TAGG_PYTHON=/path/to/python` before running the installer when `python3` is not the required interpreter.
+Set `TAGG_PYTHON=/path/to/python` before running the installer when `python3` is not the required interpreter.
 4. Restart Thunderbird and configure the extension from its settings page.
 
 The native host installer currently supports Linux and macOS. Windows requires platform-specific native-messaging registration.
