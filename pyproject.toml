@@ -1,7 +1,7 @@
 [project]
 name = "tagg"
 version = "0.1.0"
-description = ""
+description = "Auto-tag for Obsidian and Thunderbird with Decision Models"
 readme = "README.md"
 authors = [
     { name = "Fansesi", email = "buraksinaakbudak@gmail.com" }
