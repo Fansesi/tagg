@@ -1,0 +1,13 @@
+{
+  "name": "thunderbird-tagg",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "build:release": "node ../../scripts/build-thunderbird-release.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

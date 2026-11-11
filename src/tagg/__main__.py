@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .core import format_inference_error, infer_tags
+
 
 def setup_logger(
     name: str = "app",
@@ -63,66 +65,6 @@ def setup_logger(
     return logger
 
 
-def curate_json_schema(
-    model: str, content: str, tags: list[str]
-) -> dict[str, Any]:
-    """Returns a JSON schema to constrain llama.cpp output."""
-    return {
-        "model": model,
-        "state": content,
-        "questions": {
-            "tag": {
-                "type": "choice",
-                # TODO(burak): Maybe inside a config too?
-                "instructions": "Given the file contents, which tag is the most appropriate one?",
-                "criteria": {k: None for k in tags},
-            }
-        },
-    }
-
-
-def query_endpoint(
-    url: str,
-    schema: dict[str, Any],
-    timeout: int = 60,
-) -> dict[str, Any]:
-    """Sends the payload to the /v1/systemone endpoint via urllib."""
-    data = json.dumps(schema).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        raw_body = response.read().decode("utf-8")
-        return json.loads(raw_body)
-
-
-def filter_tags(
-    api_response: dict[str, Any], max_n: int = 1, threshold: float = 0.3
-) -> dict[str, Any]:
-    probs = api_response["answers"]["tag"]["probabilities"]
-    logger.debug(f"Probs for each tag:\n{probs}")
-    keys = sorted(probs, key=lambda x: probs[x], reverse=True)
-    logger.debug(f"Sorted probs:\n{keys}")
-
-    if len(keys) > max_n:
-        keys = keys[:max_n]
-
-    keys = [
-        key
-        for key in keys
-        if probs.get(key) is not None and probs[key] >= threshold
-    ]
-
-    return {"tags": keys}
-
-
 def read_file_excerpt(path: Path, max_bytes: int) -> str:
     """Reads file text safely up to max_bytes."""
     with path.open("rb") as f:
@@ -146,7 +88,7 @@ def wait_for_server(
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 if resp.status == 200:
                     return True
-        except urllib.error.URLError, TimeoutError, ConnectionRefusedError:
+        except (urllib.error.URLError, TimeoutError, ConnectionRefusedError):
             # Server is either not up yet or returned 503 (loading)
             pass
 
@@ -174,33 +116,6 @@ def start_server(
     return None
 
 
-def infer_tags(
-    model: str,
-    content: str,
-    candidate_tags: list[str],
-    url: str,
-    num_tags: int,
-    threshold: float,
-    ask_separately: bool,
-) -> dict[str, Any]:
-    if not ask_separately:
-        schema = curate_json_schema(model, content, candidate_tags)
-        return filter_tags(query_endpoint(url, schema), num_tags, threshold)
-
-    remaining = list(candidate_tags)
-    selected: list[str] = []
-    for _ in range(num_tags):
-        if not remaining:
-            break
-        schema = curate_json_schema(model, content, remaining)
-        tags = filter_tags(query_endpoint(url, schema), 1, threshold)["tags"]
-        if not tags:
-            break
-        selected.append(tags[0])
-        remaining.remove(tags[0])
-    return {"tags": selected}
-
-
 def emit_progress(path: Path, completed: int, total: int) -> None:
     print(
         json.dumps(
@@ -224,7 +139,6 @@ def parse_args() -> argparse.Namespace:
         "-p",
         "--paths",
         nargs="+",
-        required=True,
         type=Path,
         help="List of file paths to evaluate.",
     )
@@ -232,7 +146,6 @@ def parse_args() -> argparse.Namespace:
         "-t",
         "--tags",
         nargs="+",
-        required=True,
         help="List of candidate tags.",
     )
     parser.add_argument(
@@ -298,7 +211,47 @@ def parse_args() -> argparse.Namespace:
         help="TODO: for a single file, ask --num-tags-per-file many times "
         "each time removing the most confident tag.",
     )
+    parser.add_argument(
+        "--json-request",
+        action="store_true",
+        help="Read one structured tagging request from stdin and write its result to stdout.",
+    )
     return parser.parse_args()
+
+
+def handle_json_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Handle the native-host request payload without touching the filesystem."""
+    required = ("content", "tags", "url", "model", "num_tags", "threshold")
+    missing = [key for key in required if key not in request]
+    if missing:
+        raise ValueError(f"Missing request fields: {', '.join(missing)}")
+    if not isinstance(request["content"], str):
+        raise ValueError("content must be a string")
+    if not isinstance(request["tags"], list) or not all(
+        isinstance(tag, str) for tag in request["tags"]
+    ):
+        raise ValueError("tags must be a list of strings")
+    return infer_tags(
+        str(request["model"]),
+        request["content"],
+        request["tags"],
+        str(request["url"]),
+        int(request["num_tags"]),
+        float(request["threshold"]),
+        bool(request.get("ask_separately", False)),
+    )
+
+
+def run_json_request() -> int:
+    try:
+        request = json.load(sys.stdin)
+        if not isinstance(request, dict):
+            raise ValueError("Request must be a JSON object")
+        print(json.dumps(handle_json_request(request)))
+        return 0
+    except Exception as error:
+        print(json.dumps({"error": format_inference_error(error)}))
+        return 1
 
 
 def main() -> int:
@@ -306,6 +259,14 @@ def main() -> int:
     log_level = "DEBUG" if args.verbose else "INFO"
     global logger
     logger = setup_logger("tagg", level=log_level, log_file=args.log_file)
+
+    if args.json_request:
+        return run_json_request()
+    if not args.paths or not args.tags:
+        parser = argparse.ArgumentParser()
+        parser.error(
+            "--paths and --tags are required unless --json-request is used"
+        )
 
     server_process = None
     if args.start_server:

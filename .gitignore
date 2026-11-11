@@ -9,6 +9,7 @@ wheels/
 
 # Node files
 src/obsidian-tagg/node_modules
+src/thunderbird-tagg/node_modules
 
 # Virtual environments
 .venv

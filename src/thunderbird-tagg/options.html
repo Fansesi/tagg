@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Tagg settings</title>
+    <style>
+      body {
+        font: message-box;
+        margin: 2rem;
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        max-width: 42rem;
+      }
+
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+
+      label.checkbox {
+        flex-direction: row;
+        align-items: center;
+      }
+
+      input:not([type="checkbox"]) {
+        box-sizing: border-box;
+        max-width: 100%;
+        padding: 0.4rem;
+        width: 28rem;
+      }
+
+      button {
+        align-self: flex-start;
+        padding: 0.45rem 0.8rem;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="settings-form">
+      <label>Model endpoint <input name="url" type="url" required></label>
+      <label>Model name <input name="model" required></label>
+      <label>Threshold <input name="threshold" type="number" min="0" max="1" step="0.01" required></label>
+      <label>Tags per message <input name="numTags" type="number" min="1" step="1" required></label>
+      <label>Maximum candidates <input name="maxCandidates" type="number" min="1" step="1" required></label>
+      <label>Excluded tags <input name="excludedTags" placeholder="#work, personal"></label>
+      <label class="checkbox"><input name="askSeparately" type="checkbox"> Ask separately for each tag</label>
+      <button type="submit">Save settings</button>
+      <output id="status" role="status"></output>
+    </form>
+    <script src="options.js"></script>
+  </body>
+</html>

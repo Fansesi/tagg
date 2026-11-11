@@ -1,0 +1,7 @@
+{
+  "name": "tagg_native_host",
+  "description": "Tagg native messaging host",
+  "path": "REPLACE_WITH_INSTALLED_HOST_PATH",
+  "type": "stdio",
+  "allowed_extensions": ["tagg@fansesi.dev"]
+}

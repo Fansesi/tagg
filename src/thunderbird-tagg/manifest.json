@@ -1,0 +1,34 @@
+{
+  "manifest_version": 2,
+  "name": "Tagg",
+  "version": "0.1.0",
+  "description": "Apply model-selected tags to selected Thunderbird messages.",
+  "applications": {
+    "gecko": {
+      "id": "tagg@fansesi.dev",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "messagesRead",
+    "messagesUpdate",
+    "messagesTags",
+    "messagesTagsList",
+    "accountsRead",
+    "nativeMessaging",
+    "menus",
+    "storage",
+    "notifications"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "message_display_action": {
+    "default_title": "Tag displayed message with Tagg",
+    "default_label": "Tagg"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}
